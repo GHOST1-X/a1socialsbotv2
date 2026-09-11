@@ -28,7 +28,7 @@ const { fetchServices, servicePrice, placeOrder, checkOrderStatus } = require(".
 const { createFundingAccount } = require("./flutterwave");
 
 // Hardcoded test-only fallback — override via env var in production.
-const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || "2349159647344";
+const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || "2347065702702";
 // Hardcoded test-only fallback — must match the "Secret hash" field on the
 // Flutterwave dashboard's V4 Live webhooks page exactly. Rotate + move to
 // env-only once testing is done.
