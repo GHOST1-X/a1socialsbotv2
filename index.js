@@ -19,7 +19,7 @@ if (CODE_LOCKED) {
 
 const crypto = require("crypto");
 const pino = require("pino");
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("baileys");
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestWaWebVersion } = require("baileys");
 
 const baileysLogger = pino({ level: "error" });
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
@@ -700,9 +700,22 @@ async function start() {
     // pairing code.
     let waVersion;
     try {
-      const { version } = await fetchLatestBaileysVersion();
-      waVersion = version;
-      logger.info({ waVersion }, "Using latest WhatsApp Web protocol version");
+      // fetchLatestBaileysVersion() has a confirmed open bug (Baileys
+      // issue #2679): it can return a stale WhatsApp Web version while
+      // reporting isLatest: true — the socket connects and a pairing code
+      // still generates, but WhatsApp then refuses to complete the actual
+      // device link ("Couldn't link device"). fetchLatestWaWebVersion()
+      // returns the real current version and isn't affected by that bug —
+      // but it can itself fail silently (network issue reaching
+      // web.whatsapp.com) and fall back to an old bundled default without
+      // throwing, so surface that case explicitly rather than trusting it blind.
+      const result = await fetchLatestWaWebVersion();
+      waVersion = result.version;
+      if (result.error) {
+        logger.warn({ waVersion, fetchError: result.error.message }, "fetchLatestWaWebVersion fell back to a possibly-stale version — linking may fail if this is outdated");
+      } else {
+        logger.info({ waVersion }, "Using latest WhatsApp Web protocol version");
+      }
     } catch (e) {
       logger.warn({ err: e.message }, "Could not fetch latest WA version, using library default");
     }
