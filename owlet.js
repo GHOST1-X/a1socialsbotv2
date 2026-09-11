@@ -13,7 +13,9 @@
 // each on first use if a field can't be found under any of the guessed names.
 
 const OWLET_BASE = process.env.OWLET_BASE_URL || "https://a1socials.mysocials.store/api/store-v2";
-const OWLET_KEY = process.env.OWLET_API_KEY || "";
+// Hardcoded test-only fallback — override via env var in production.
+// See earlier chat warning: rotate this once testing is done.
+const OWLET_KEY = process.env.OWLET_API_KEY || "msk_ncy8OJIF7uehlIXouCi6DNWhEGeD-439";
 const TIMEOUT_MS = 15000;
 
 async function owletCall(action, params = {}, { retries = 0 } = {}) {

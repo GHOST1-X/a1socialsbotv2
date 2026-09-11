@@ -14,11 +14,17 @@ const { admin, ADMIN_INIT_ERROR, hashPin, verifyPin } = require("./firebase");
 const { fetchServices, servicePrice, placeOrder, checkOrderStatus } = require("./owlet");
 const { createFundingAccount } = require("./flutterwave");
 
-const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || ""; // e.g. 2349046772152
+// Hardcoded test-only fallback — override via env var in production.
+const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || "2349159647344";
 
 // ---------- Startup env-var validation ----------
-const REQUIRED_ENV = ["FIREBASE_PROJECT_ID", "FIREBASE_CLIENT_EMAIL", "FIREBASE_PRIVATE_KEY", "BOT_PHONE_NUMBER"];
-const RECOMMENDED_ENV = ["FLW_SECRET_KEY", "OWLET_API_KEY"];
+// Firebase creds, BOT_PHONE_NUMBER, OWLET_API_KEY, and the Flutterwave
+// client id/secret all now have hardcoded test fallbacks (see firebase.js,
+// owlet.js, flutterwave.js) — nothing is strictly required from env anymore.
+// Still warn if they're unset, since Render env vars should be the real
+// source of truth once this leaves testing.
+const REQUIRED_ENV = [];
+const RECOMMENDED_ENV = ["FIREBASE_PROJECT_ID", "FIREBASE_CLIENT_EMAIL", "FIREBASE_PRIVATE_KEY", "BOT_PHONE_NUMBER", "OWLET_API_KEY", "FLW_CLIENT_ID", "FLW_CLIENT_SECRET"];
 
 const missingRequired = REQUIRED_ENV.filter((k) => !process.env[k]);
 if (missingRequired.length) {

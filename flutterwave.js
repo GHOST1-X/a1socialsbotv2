@@ -18,8 +18,10 @@ const FLW_BASE = process.env.FLW_ENV === "production"
   : "https://developersandbox-api.flutterwave.com";
 const FLW_TOKEN_URL = "https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
 
-const FLW_CLIENT_ID = process.env.FLW_CLIENT_ID || ""; // "public key" slot in v4 dashboard
-const FLW_CLIENT_SECRET = process.env.FLW_CLIENT_SECRET || ""; // "secret key" slot in v4 dashboard
+// Hardcoded test-only fallbacks — override via env vars in production.
+// See earlier chat warning: rotate these once testing is done.
+const FLW_CLIENT_ID = process.env.FLW_CLIENT_ID || "b61168d8-6f75-4987-95ee-d65f0685a0bf"; // "public key" slot in v4 dashboard
+const FLW_CLIENT_SECRET = process.env.FLW_CLIENT_SECRET || "91JeCwR2yGjw5f4bizpmXbMOIcQ3nGgZ"; // "secret key" slot in v4 dashboard
 // Flutterwave MFB's own settlement bank code, per the PWBT docs example.
 // Verify against GET /banks for your account if virtual accounts fail to generate.
 const BANK_CODE = process.env.FLW_BANK_CODE || "090567";
