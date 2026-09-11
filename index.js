@@ -20,7 +20,7 @@ const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || "2349159647344";
 // Hardcoded test-only fallback — must match the "Secret hash" field on the
 // Flutterwave dashboard's V4 Live webhooks page exactly. Rotate + move to
 // env-only once testing is done.
-const FLW_WEBHOOK_SECRET_HASH = process.env.FLW_WEBHOOK_SECRET_HASH || "85bf7d2c91be3e0eb3e109ce109f9d2b6f81163c1eddff96899ab1807857aade";
+const FLW_WEBHOOK_SECRET_HASH = process.env.FLW_WEBHOOK_SECRET_HASH || "2009Oliver$$";
 
 // ---------- Startup env-var validation ----------
 // Firebase creds, BOT_PHONE_NUMBER, OWLET_API_KEY, and the Flutterwave
