@@ -7,7 +7,7 @@
 require("dotenv").config();
 const crypto = require("crypto");
 const pino = require("pino");
-const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require("baileys");
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("baileys");
 
 const baileysLogger = pino({ level: "error" });
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
@@ -658,7 +658,26 @@ async function start() {
   reconnecting = true;
   try {
     const { state, saveCreds } = await useMultiFileAuthState("auth_session");
-    const sock = makeWASocket({ auth: state, printQRInTerminal: false, logger: baileysLogger });
+    // Fetch the current WhatsApp Web protocol version at connect time rather
+    // than relying on whatever's bundled in the installed Baileys version —
+    // WhatsApp's protocol version changes often enough that a bundled
+    // default can go stale between releases, and a stale version is a
+    // common cause of "Couldn't link device" even with a correctly-entered
+    // pairing code.
+    let waVersion;
+    try {
+      const { version } = await fetchLatestBaileysVersion();
+      waVersion = version;
+      logger.info({ waVersion }, "Using latest WhatsApp Web protocol version");
+    } catch (e) {
+      logger.warn({ err: e.message }, "Could not fetch latest WA version, using library default");
+    }
+    const sock = makeWASocket({
+      auth: state,
+      printQRInTerminal: false,
+      logger: baileysLogger,
+      ...(waVersion ? { version: waVersion } : {}),
+    });
 
     sock.ev.on("connection.update", (update) => {
       const { connection, lastDisconnect } = update;
