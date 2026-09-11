@@ -19,7 +19,7 @@ if (CODE_LOCKED) {
 
 const crypto = require("crypto");
 const pino = require("pino");
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestWaWebVersion } = require("baileys");
+const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require("baileys");
 
 const baileysLogger = pino({ level: "error" });
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
@@ -692,39 +692,13 @@ async function start() {
   reconnecting = true;
   try {
     const { state, saveCreds } = await useMultiFileAuthState("auth_session");
-    // Fetch the current WhatsApp Web protocol version at connect time rather
-    // than relying on whatever's bundled in the installed Baileys version —
-    // WhatsApp's protocol version changes often enough that a bundled
-    // default can go stale between releases, and a stale version is a
-    // common cause of "Couldn't link device" even with a correctly-entered
-    // pairing code.
-    let waVersion;
-    try {
-      // fetchLatestBaileysVersion() has a confirmed open bug (Baileys
-      // issue #2679): it can return a stale WhatsApp Web version while
-      // reporting isLatest: true — the socket connects and a pairing code
-      // still generates, but WhatsApp then refuses to complete the actual
-      // device link ("Couldn't link device"). fetchLatestWaWebVersion()
-      // returns the real current version and isn't affected by that bug —
-      // but it can itself fail silently (network issue reaching
-      // web.whatsapp.com) and fall back to an old bundled default without
-      // throwing, so surface that case explicitly rather than trusting it blind.
-      const result = await fetchLatestWaWebVersion();
-      waVersion = result.version;
-      if (result.error) {
-        logger.warn({ waVersion, fetchError: result.error.message }, "fetchLatestWaWebVersion fell back to a possibly-stale version — linking may fail if this is outdated");
-      } else {
-        logger.info({ waVersion }, "Using latest WhatsApp Web protocol version");
-      }
-    } catch (e) {
-      logger.warn({ err: e.message }, "Could not fetch latest WA version, using library default");
-    }
-    const sock = makeWASocket({
-      auth: state,
-      printQRInTerminal: false,
-      logger: baileysLogger,
-      ...(waVersion ? { version: waVersion } : {}),
-    });
+    // No explicit version override — woodpayvtu-bot uses the bundled
+    // default from baileys@6.7.24 with no version fetching at all, and a
+    // fresh link with that exact combination was just confirmed working
+    // right now. Both fetchLatestBaileysVersion() and
+    // fetchLatestWaWebVersion() were tried here and neither fixed linking,
+    // so matching the known-working config exactly instead of guessing further.
+    const sock = makeWASocket({ auth: state, printQRInTerminal: false, logger: baileysLogger });
 
     sock.ev.on("connection.update", (update) => {
       const { connection, lastDisconnect } = update;
