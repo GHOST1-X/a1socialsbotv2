@@ -639,54 +639,114 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Previously this called start() again immediately on every disconnect —
+// no delay, no cap. That tight loop is what produced the log you saw: three
+// "WhatsApp connection closed" events within about a second of each other,
+// then an uncaught throw from inside Baileys that crashed the whole
+// process (Render then restarts the container, which repeats the same
+// loop). Reconnects now back off (5s, 10s, 20s... capped at 60s) and are
+// serialized so overlapping start() calls can't pile up.
+let reconnectAttempts = 0;
+let reconnecting = false;
+// Only request a pairing code once per boot — retrying it on every
+// reconnect is itself a likely reason WhatsApp was closing the connection
+// so quickly (looks like automated/abusive behavior from their side).
+let pairingCodeRequested = false;
+
 async function start() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth_session");
-  const sock = makeWASocket({ auth: state, printQRInTerminal: false, logger: baileysLogger });
+  if (reconnecting) return;
+  reconnecting = true;
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState("auth_session");
+    const sock = makeWASocket({ auth: state, printQRInTerminal: false, logger: baileysLogger });
 
-  sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect } = update;
-    if (connection === "open") {
-      waConnectionState = "open";
-      logger.info("Connected to WhatsApp");
-    }
-    if (connection === "close") {
-      waConnectionState = "closed";
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      logger.warn({ shouldReconnect }, "WhatsApp connection closed");
-      if (shouldReconnect) start();
-    }
-  });
+    sock.ev.on("connection.update", (update) => {
+      const { connection, lastDisconnect } = update;
+      if (connection === "open") {
+        waConnectionState = "open";
+        reconnectAttempts = 0;
+        logger.info("Connected to WhatsApp");
+      }
+      if (connection === "close") {
+        waConnectionState = "closed";
+        const shouldReconnect =
+          lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+        logger.warn({ shouldReconnect, err: lastDisconnect?.error?.message }, "WhatsApp connection closed");
+        reconnecting = false;
+        if (shouldReconnect) {
+          reconnectAttempts++;
+          const backoffMs = Math.min(60000, 5000 * 2 ** (reconnectAttempts - 1));
+          logger.info({ backoffMs, attempt: reconnectAttempts }, "Reconnecting after backoff");
+          setTimeout(() => start(), backoffMs);
+        } else {
+          logger.error("Logged out — delete auth_session and re-link with a new pairing code.");
+        }
+      }
+    });
 
-  sock.ev.on("creds.update", saveCreds);
+    sock.ev.on("creds.update", saveCreds);
 
-  if (!sock.authState.creds.registered && BOT_PHONE_NUMBER) {
-    await delay(3000);
-    const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-    logger.info({ code }, "Pairing code generated — enter this in WhatsApp");
-  }
-
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
-    for (const msg of messages) {
-      if (msg.key.fromMe || !msg.message) continue;
-      const jid = msg.key.remoteJid;
-      if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue; // ignore groups/status
-      const text =
-        msg.message.conversation ||
-        msg.message.extendedTextMessage?.text ||
-        "";
+    if (!sock.authState.creds.registered && BOT_PHONE_NUMBER && !pairingCodeRequested) {
+      pairingCodeRequested = true;
+      await delay(3000);
       try {
-        await handleMessage(sock, jid, text);
+        const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+        logger.info({ code }, "Pairing code generated — enter this in WhatsApp");
       } catch (e) {
-        logger.error({ err: e.message, stack: e.stack, jid }, "Error handling message");
-        await sock.sendMessage(jid, { text: "Something went wrong. Please try again or send *menu*." });
-      } finally {
-        const session = sessions.get(jid);
-        if (session) await persistSession(jid, session);
+        logger.error({ err: e.message }, "Pairing code request failed");
+        pairingCodeRequested = false; // allow a retry on the next successful connection attempt
       }
     }
-  });
+
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+      if (type !== "notify") return;
+      for (const msg of messages) {
+        if (msg.key.fromMe || !msg.message) continue;
+        const jid = msg.key.remoteJid;
+        if (!jid || jid.endsWith("@g.us") || jid === "status@broadcast") continue; // ignore groups/status
+        const text =
+          msg.message.conversation ||
+          msg.message.extendedTextMessage?.text ||
+          "";
+        try {
+          await handleMessage(sock, jid, text);
+        } catch (e) {
+          logger.error({ err: e.message, stack: e.stack, jid }, "Error handling message");
+          try {
+            await sock.sendMessage(jid, { text: "Something went wrong. Please try again or send *menu*." });
+          } catch (_) {
+            // socket may already be closed — the outer reconnect logic handles this
+          }
+        } finally {
+          const session = sessions.get(jid);
+          if (session) await persistSession(jid, session);
+        }
+      }
+    });
+
+    reconnecting = false;
+  } catch (e) {
+    reconnecting = false;
+    logger.error({ err: e.message, stack: e.stack }, "start() failed");
+    reconnectAttempts++;
+    const backoffMs = Math.min(60000, 5000 * 2 ** (reconnectAttempts - 1));
+    setTimeout(() => start(), backoffMs);
+  }
 }
+
+// Last-resort safety net: an uncaught error anywhere (e.g. a Baileys
+// internal throw like the "Connection Closed" one that crashed the process
+// before) now gets logged and triggers a backed-off reconnect instead of
+// killing the whole service.
+process.on("uncaughtException", (e) => {
+  logger.error({ err: e.message, stack: e.stack }, "Uncaught exception — recovering");
+  reconnecting = false;
+  reconnectAttempts++;
+  const backoffMs = Math.min(60000, 5000 * 2 ** (reconnectAttempts - 1));
+  setTimeout(() => start(), backoffMs);
+});
+process.on("unhandledRejection", (e) => {
+  logger.error({ err: e?.message || e }, "Unhandled rejection — recovering");
+});
 
 start();
