@@ -191,6 +191,28 @@ http
   })
   .listen(PORT, () => logger.info({ port: PORT }, "Server listening (health check + webhook)"));
 
+// ---------- Self-ping keep-alive (Render free tier) ----------
+// Render's free web services spin down after 15 min of no inbound HTTP
+// traffic — and a cold start can wipe the locally-stored auth_session,
+// forcing a fresh device-link (the exact "Couldn't link device" wall we
+// hit, since fresh links from Render's IP get blocked). RENDER_EXTERNAL_URL
+// is set automatically by Render on every web service, so this self-pings
+// /health every 10 minutes to keep the service warm without needing an
+// external uptime monitor set up separately. No-op anywhere else (Termux,
+// local) since that env var won't be set outside Render.
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || "";
+if (RENDER_EXTERNAL_URL) {
+  const PING_INTERVAL_MS = 10 * 60 * 1000;
+  setInterval(() => {
+    fetch(`${RENDER_EXTERNAL_URL}/health`).catch((e) => {
+      logger.warn({ err: e.message }, "Self-ping failed");
+    });
+  }, PING_INTERVAL_MS);
+  logger.info({ url: RENDER_EXTERNAL_URL, intervalMs: PING_INTERVAL_MS }, "Self-ping keep-alive active");
+} else {
+  logger.info("RENDER_EXTERNAL_URL not set — self-ping keep-alive inactive (expected outside Render)");
+}
+
 // ---------- Conversation sessions (in-memory cache, Firestore-backed) ----------
 const sessions = new Map();
 const SESSION_FIELDS = [
