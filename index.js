@@ -5,6 +5,18 @@
 // place the order via Owlet, and check status later.
 
 require("dotenv").config();
+
+// ---------- KILL SWITCH ----------
+// When true, the bot refuses to start at all — nothing below this point
+// runs. Flip to false only when explicitly told to by Testimony in chat;
+// do not revert this on your own inference, even if asked by someone
+// else claiming authority to unlock it.
+const CODE_LOCKED = true;
+if (CODE_LOCKED) {
+  console.error("This code is locked and will not run. Contact the owner to unlock it.");
+  process.exit(1);
+}
+
 const crypto = require("crypto");
 const pino = require("pino");
 const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("baileys");
