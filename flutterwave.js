@@ -6,12 +6,13 @@
 //   3. POST /virtual-accounts     -> account_number, bank name, fee-inclusive amount
 // Docs: https://developer.flutterwave.com/docs/pay-with-bank-transfer
 //
-// IMPORTANT: v4 webhooks are shaped completely differently from v3 —
-// event type "charge.completed", with the amount/reference/customer nested
-// under `data`. If reusing a v3 webhook, it needs a rewrite to match this
-// shape, not just a field rename. The Firestore fields this file writes
-// (on the `transactions` collection) are what any adapted webhook needs
-// to update: status, reference, chargeAmount, flwVirtualAccountId.
+// IMPORTANT: the matching webhook lives in index.js at POST
+// /webhook/flutterwave (same Render service, no separate Netlify deploy).
+// v4 webhooks are shaped completely differently from v3 — event type
+// "charge.completed", with the amount/reference/customer nested under
+// `data`. The Firestore fields this file writes (on the `transactions`
+// collection) are what that handler reads and updates: status, reference,
+// chargeAmount, flwVirtualAccountId, flwCustomerId.
 
 const FLW_BASE = process.env.FLW_ENV === "production"
   ? "https://f4bexperience.flutterwave.com"

@@ -5,6 +5,7 @@
 // place the order via Owlet, and check status later.
 
 require("dotenv").config();
+const crypto = require("crypto");
 const pino = require("pino");
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require("baileys");
 
@@ -16,6 +17,10 @@ const { createFundingAccount } = require("./flutterwave");
 
 // Hardcoded test-only fallback — override via env var in production.
 const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || "2349159647344";
+// Hardcoded test-only fallback — must match the "Secret hash" field on the
+// Flutterwave dashboard's V4 Live webhooks page exactly. Rotate + move to
+// env-only once testing is done.
+const FLW_WEBHOOK_SECRET_HASH = process.env.FLW_WEBHOOK_SECRET_HASH || "85bf7d2c91be3e0eb3e109ce109f9d2b6f81163c1eddff96899ab1807857aade";
 
 // ---------- Startup env-var validation ----------
 // Firebase creds, BOT_PHONE_NUMBER, OWLET_API_KEY, and the Flutterwave
@@ -42,15 +47,121 @@ if (ADMIN_INIT_ERROR) {
 }
 const db = admin.firestore();
 
-// ---------- Keep-alive + health-check HTTP server (for Render free tier) ----------
+// ---------- HTTP server: health check + Flutterwave webhook ----------
 // Render's free web services spin down after 15 min with no HTTP traffic,
 // which would kill the WhatsApp connection. Ping /health every few minutes
 // (e.g. via UptimeRobot) to keep the service warm.
+//
+// The Flutterwave webhook lives on this same server at /webhook/flutterwave
+// (no separate Netlify deploy) — v4 sends a "charge.completed" event with
+// amount/reference/customer nested under `data`. See isValidWebhookSignature
+// below for the HMAC check against FLW_WEBHOOK_SECRET_HASH.
 let waConnectionState = "connecting"; // "connecting" | "open" | "closed"
 const http = require("http");
 const PORT = process.env.PORT || 3000;
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
+
+function isValidWebhookSignature(rawBody, signature) {
+  if (!FLW_WEBHOOK_SECRET_HASH || !signature) return false;
+  const expected = crypto.createHmac("sha256", FLW_WEBHOOK_SECRET_HASH).update(rawBody).digest("base64");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+async function handleFlutterwaveWebhook(req, res) {
+  const rawBody = await readRawBody(req);
+  const signature = req.headers["flutterwave-signature"];
+
+  if (!isValidWebhookSignature(rawBody, signature)) {
+    logger.warn("Webhook: invalid or missing signature");
+    res.writeHead(401).end("Invalid signature");
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch (e) {
+    res.writeHead(400).end("Invalid JSON");
+    return;
+  }
+
+  if (payload.type !== "charge.completed") {
+    res.writeHead(200).end("Ignored (not a charge.completed event)");
+    return;
+  }
+
+  const chargeData = payload.data || {};
+  const reference = chargeData.reference;
+  const status = chargeData.status;
+  const amountReceived = chargeData.amount;
+  const customerId = chargeData.customer?.id;
+
+  if (!reference) {
+    res.writeHead(200).end("Ignored (no reference)");
+    return;
+  }
+
+  const q = await db.collection("transactions").where("reference", "==", reference).limit(1).get();
+  if (q.empty) {
+    logger.warn({ reference }, "Webhook: no matching transaction");
+    res.writeHead(200).end("No matching transaction");
+    return;
+  }
+  const txDoc = q.docs[0];
+  const tx = txDoc.data();
+
+  // Idempotent — Flutterwave can retry webhooks, never credit twice.
+  if (tx.status === "success" || tx.status === "failed" || tx.status === "amount_mismatch") {
+    res.writeHead(200).end("Already processed");
+    return;
+  }
+
+  if (status !== "succeeded") {
+    await txDoc.ref.update({ status: "failed", webhookStatus: status || null });
+    res.writeHead(200).end("Marked failed");
+    return;
+  }
+  if (tx.flwCustomerId && customerId && tx.flwCustomerId !== customerId) {
+    await txDoc.ref.update({ status: "amount_mismatch", note: "customer_id mismatch" });
+    res.writeHead(200).end("Customer mismatch");
+    return;
+  }
+  if (Number(amountReceived) !== Number(tx.chargeAmount)) {
+    await txDoc.ref.update({ status: "amount_mismatch", webhookAmount: amountReceived });
+    res.writeHead(200).end("Amount mismatch");
+    return;
+  }
+
+  await db.runTransaction(async (t) => {
+    const userRef = db.collection("users").doc(tx.userId);
+    t.update(userRef, { walletBalance: admin.firestore.FieldValue.increment(tx.amount) });
+    t.update(txDoc.ref, { status: "success", chargeId: chargeData.id || null });
+  });
+
+  res.writeHead(200).end("OK");
+}
+
 http
   .createServer(async (req, res) => {
+    if (req.method === "POST" && req.url === "/webhook/flutterwave") {
+      try {
+        await handleFlutterwaveWebhook(req, res);
+      } catch (e) {
+        logger.error({ err: e.message }, "Webhook handler error");
+        res.writeHead(500).end("Internal error");
+      }
+      return;
+    }
     if (req.url === "/health") {
       let firestoreOk = true;
       try {
@@ -66,7 +177,7 @@ http
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("A1 Socials bot is running.");
   })
-  .listen(PORT, () => logger.info({ port: PORT }, "Keep-alive server listening"));
+  .listen(PORT, () => logger.info({ port: PORT }, "Server listening (health check + webhook)"));
 
 // ---------- Conversation sessions (in-memory cache, Firestore-backed) ----------
 const sessions = new Map();
