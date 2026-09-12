@@ -182,15 +182,22 @@ http
       return;
     }
     if (req.url === "/health") {
+      // Always 200 as long as the process itself is alive — this is what
+      // platform-level health checks (Railway, Render) use to decide
+      // whether to keep the container running. Returning 503 while
+      // WhatsApp is mid-reconnect previously caused Railway to kill the
+      // container entirely (SIGTERM) during exactly the period it was
+      // trying to recover, which is the opposite of what's wanted. The
+      // actual WhatsApp/Firestore state is still reported in the body for
+      // anyone (or any external monitor) that wants to inspect it.
       let firestoreOk = true;
       try {
         await db.collection("botSessions").limit(1).get();
       } catch (e) {
         firestoreOk = false;
       }
-      const healthy = waConnectionState === "open" && firestoreOk;
-      res.writeHead(healthy ? 200 : 503, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ whatsapp: waConnectionState, firestore: firestoreOk ? "ok" : "unreachable" }));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ process: "alive", whatsapp: waConnectionState, firestore: firestoreOk ? "ok" : "unreachable" }));
       return;
     }
     if (req.url === "/qr") {
