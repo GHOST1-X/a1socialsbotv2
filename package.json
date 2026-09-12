@@ -11,7 +11,8 @@
     "baileys": "^6.7.24",
     "firebase-admin": "^12.6.0",
     "dotenv": "^16.4.5",
-    "pino": "^9.0.0"
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.4"
   },
   "engines": {
     "node": ">=20.0.0"

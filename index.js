@@ -69,6 +69,13 @@ const db = admin.firestore();
 // amount/reference/customer nested under `data`. See isValidWebhookSignature
 // below for the HMAC check against FLW_WEBHOOK_SECRET_HASH.
 let waConnectionState = "connecting"; // "connecting" | "open" | "closed"
+// Latest unscanned QR string from Baileys, and its rendered PNG data URL —
+// served at GET /qr since Termux running on the same phone as WhatsApp
+// can't scan its own terminal's QR with its own camera. View this page on
+// a different screen (laptop, another phone) and scan with WhatsApp's
+// camera on the phone that owns BOT_PHONE_NUMBER.
+const QRCode = require("qrcode");
+let latestQrDataUrl = null;
 const http = require("http");
 const PORT = process.env.PORT || 3000;
 
@@ -184,6 +191,24 @@ http
       const healthy = waConnectionState === "open" && firestoreOk;
       res.writeHead(healthy ? 200 : 503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ whatsapp: waConnectionState, firestore: firestoreOk ? "ok" : "unreachable" }));
+      return;
+    }
+    if (req.url === "/qr") {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      if (waConnectionState === "open") {
+        res.end("<h2>Already connected to WhatsApp.</h2>");
+      } else if (latestQrDataUrl) {
+        // Auto-refresh every 20s since Baileys rotates the QR periodically
+        // until it's scanned.
+        res.end(`<html><head><meta http-equiv="refresh" content="20"></head>
+          <body style="text-align:center;font-family:sans-serif">
+            <h3>Scan with WhatsApp → Linked Devices → Link a Device</h3>
+            <img src="${latestQrDataUrl}" style="width:300px;height:300px" />
+            <p>Page auto-refreshes every 20s.</p>
+          </body></html>`);
+      } else {
+        res.end("<h2>No QR code yet — waiting for connection...</h2><meta http-equiv='refresh' content='5'>");
+      }
       return;
     }
     res.writeHead(200, { "Content-Type": "text/plain" });
@@ -683,20 +708,34 @@ function delay(ms) {
 // happens identically with or without this protection.
 let reconnectAttempts = 0;
 let reconnecting = false;
-let pairingCodeRequested = false;
 
 async function start() {
   if (reconnecting) return;
   reconnecting = true;
   try {
     const { state, saveCreds } = await useMultiFileAuthState("auth_session");
+    // QR-code method instead of pairing-code — pairing-code requests were
+    // hitting a confirmed-unstable path in Baileys (statusCode 428
+    // "Precondition Required") across every number/network/host tested.
+    // printQRInTerminal is left false since Termux on the same phone as
+    // WhatsApp can't scan its own terminal — the qr string is instead
+    // captured below and rendered at GET /qr for scanning from another screen.
     const sock = makeWASocket({ auth: state, printQRInTerminal: false, logger: baileysLogger });
 
-    sock.ev.on("connection.update", (update) => {
-      const { connection, lastDisconnect } = update;
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+      if (qr) {
+        try {
+          latestQrDataUrl = await QRCode.toDataURL(qr);
+          logger.info("New QR code ready — visit /qr to scan it");
+        } catch (e) {
+          logger.error({ err: e.message }, "Failed to render QR code");
+        }
+      }
       if (connection === "open") {
         waConnectionState = "open";
         reconnectAttempts = 0;
+        latestQrDataUrl = null;
         logger.info("Connected to WhatsApp");
       }
       if (connection === "close") {
@@ -711,24 +750,12 @@ async function start() {
           logger.info({ backoffMs, attempt: reconnectAttempts }, "Reconnecting after backoff");
           setTimeout(() => start(), backoffMs);
         } else {
-          logger.error("Logged out — delete auth_session and re-link with a new pairing code.");
+          logger.error("Logged out — delete auth_session and re-link with a new QR code.");
         }
       }
     });
 
     sock.ev.on("creds.update", saveCreds);
-
-    if (!sock.authState.creds.registered && BOT_PHONE_NUMBER && !pairingCodeRequested) {
-      pairingCodeRequested = true;
-      await delay(3000);
-      try {
-        const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-        logger.info({ code }, "Pairing code generated — enter this in WhatsApp");
-      } catch (e) {
-        logger.error({ err: e.message }, "Pairing code request failed");
-        pairingCodeRequested = false;
-      }
-    }
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
